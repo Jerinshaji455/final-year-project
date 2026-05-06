@@ -29,51 +29,17 @@ import { io } from "socket.io-client";
 
 // helper: severity score by SpO2 (higher = worse)
 const severityScore = (spo2) => {
+  if (spo2 === null || spo2 === undefined || spo2 < 0) return -1;
   if (spo2 >= 95) return 0; // stable
   if (spo2 >= 90) return 1; // warning
   if (spo2 >= 85) return 2; // serious
   return 3; // critical
 };
 
-// initial 10 patients (seed)
-const makeInitialPatients = () =>
-  Array.from({ length: 10 }).map((_, i) => {
-    const base = 95 - (i % 4);
-    const now = new Date();
-    // small history to show in chart
-    const history = Array.from({ length: 8 }).map((__, idx) => {
-      const t = new Date(now.getTime() - (7 - idx) * 1000 * 60 * 5); // 5-min step
-      const spo2 = Math.max(80, Math.min(100, base + (Math.random() * 4 - 2)));
-      const hr = Math.round(65 + Math.random() * 20);
-      const bp = 110 + Math.round(Math.random() * 30);
-      return { time: t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), spo2, hr, bp };
-    });
+const hasLiveReading = (vitals) =>
+  vitals?.spo2 !== null && vitals?.spo2 !== undefined && vitals.spo2 >= 0;
 
-    // --- ADDED: make patient 1 be Jerin Shaji with id PT-1000 (real device) ---
-    if (i === 0) {
-      return {
-        id: `PT-1000`,
-        name: `Jerin Shaji`,
-        age: 28,
-        ward: "General",
-        notes: "",
-        history,
-        vitals: history[history.length - 1],
-        avatarColor: ["bg-indigo-500", "bg-rose-500", "bg-emerald-500", "bg-sky-500"][i % 4],
-      };
-    }
-
-    return {
-      id: `PT-${1000 + i}`,
-      name: `Patient ${i + 1}`,
-      age: 28 + ((i * 7) % 25),
-      ward: "General",
-      notes: "",
-      history,
-      vitals: history[history.length - 1],
-      avatarColor: ["bg-indigo-500", "bg-rose-500", "bg-emerald-500", "bg-sky-500"][i % 4],
-    };
-  });
+const makeInitialPatients = () => [];
 
 // utility: persist patients meta (notes/ward) separately
 const STORAGE_KEY = "dp_v2_patients_meta_v1";
@@ -98,7 +64,7 @@ export default function DoctorPortalV2() {
     return s ? s === "dark" : false;
   });
   const [selected, setSelected] = useState(null); // patient for modal
-  const [autoPlay, setAutoPlay] = useState(true);
+  const [autoPlay, setAutoPlay] = useState(false);
   const updateRef = useRef(null);
 
   // --- ADDED: socket reference and config ---
@@ -127,13 +93,13 @@ export default function DoctorPortalV2() {
             // create new vitals point
             const newPoint = {
               time: new Date(payload.received_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              spo2: payload.spo2 === null || payload.spo2 === -1 ? p.vitals.spo2 : payload.spo2,
-              hr: payload.hr || p.vitals.hr,
+              spo2: payload.spo2 === null || payload.spo2 === -1 ? null : payload.spo2,
+              hr: payload.hr === null || payload.hr === -1 ? null : payload.hr || p.vitals.hr,
               bp: p.vitals.bp || 120,
               updatedAt: payload.received_at,
             };
             const history = [...(p.history || []), newPoint].slice(-16);
-            return { ...p, vitals: newPoint, history };
+            return { ...p, vitals: newPoint, history, isReal: payload.isReal, deviceMac: payload.device_mac || p.deviceMac };
           }
           return p;
         });
@@ -142,23 +108,25 @@ export default function DoctorPortalV2() {
         if (!updated.some((p) => p.id === payload.patient_id)) {
           const newP = {
             id: payload.patient_id,
-            name: payload.patient_name || payload.patient_id,
+            name: payload.patient_id,
+            deviceMac: payload.device_mac,
+            isReal: payload.isReal,
             age: 30,
             ward: "General",
             notes: "",
             history: [
               {
                 time: new Date(payload.received_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-                spo2: payload.spo2,
-                hr: payload.hr,
+                spo2: payload.spo2 === -1 ? null : payload.spo2,
+                hr: payload.hr === -1 ? null : payload.hr,
                 bp: 120,
                 updatedAt: payload.received_at,
               },
             ],
             vitals: {
               time: new Date(payload.received_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              spo2: payload.spo2,
-              hr: payload.hr,
+              spo2: payload.spo2 === -1 ? null : payload.spo2,
+              hr: payload.hr === -1 ? null : payload.hr,
               bp: 120,
               updatedAt: payload.received_at,
             },
@@ -185,15 +153,17 @@ export default function DoctorPortalV2() {
             const entry = map.get(id);
             const newPoint = {
               time: new Date(r.received_at || r.ts || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              spo2: r.spo2,
-              hr: r.hr,
+              spo2: r.spo2 === -1 ? null : r.spo2,
+              hr: r.hr === -1 ? null : r.hr,
               bp: entry?.vitals?.bp || 120,
               updatedAt: r.received_at || r.ts,
             };
             const history = entry ? [...(entry.history || []), newPoint].slice(-16) : [newPoint];
             const newPatient = {
               id,
-              name: r.patient_name || (entry && entry.name) || id,
+              name: (entry && entry.name) || id,
+              deviceMac: r.device_mac || entry?.deviceMac,
+              isReal: ["PT-1000","PT-1001","PT-1002","PT-1003"].includes(id),
               age: entry?.age || 30,
               ward: entry?.ward || "General",
               notes: entry?.notes || "",
@@ -219,7 +189,7 @@ export default function DoctorPortalV2() {
   const simulateVitalsUpdate = (prev) => {
     return prev.map((p) => {
       // --- IMPORTANT: don't overwrite the real device (PT-1000) with simulated values ---
-      if (p.id === "PT-1000") return p;
+      if (p.isReal) return p;
 
       // random walk on last spo2
       const prevSpo2 = p.vitals?.spo2 ?? 97;
@@ -229,11 +199,12 @@ export default function DoctorPortalV2() {
       const nextHr = Math.max(45, Math.min(140, Math.round((p.vitals?.hr || 70) + (Math.random() * 6 - 3))));
       const nextBp = Math.max(80, Math.min(200, Math.round((p.vitals?.bp || 120) + (Math.random() * 6 - 3))));
       const newPoint = {
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        spo2: nextSpo2,
-        hr: nextHr,
-        bp: nextBp,
-      };
+  time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  spo2: nextSpo2,
+  hr: nextHr,
+  bp: nextBp,
+  updatedAt: Date.now(),   // 🔥 ADD THIS
+};
       const history = [...(p.history || []), newPoint].slice(-16); // keep last 16 points
       return { ...p, vitals: newPoint, history };
     });
@@ -421,7 +392,7 @@ export default function DoctorPortalV2() {
                         <div className="font-medium">Dr. Arjun Patel</div>
                         <div className="text-xs">MBBS, MD</div>
                       </div>
-                      <div className={`h-10 w-10 rounded-full flex items-center justify-center text-white ${patients[0].avatarColor}`}>
+                      <div className={`h-10 w-10 rounded-full flex items-center justify-center text-white ${patients[0]?.avatarColor || "bg-indigo-500"}`}>
                         AP
                       </div>
                     </div>
@@ -495,10 +466,37 @@ export default function DoctorPortalV2() {
 
                         <div className="flex items-center gap-4 w-full sm:w-auto justify-between">
                           <div className="text-right">
-                            <div className={`text-xl font-semibold ${level >= 3 ? "text-rose-600" : level === 2 ? "text-amber-600" : "text-emerald-600"}`}>
-                              {Math.round(p.vitals.spo2)}%
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-300">SpO2</div>
+                            <div className={`text-xl font-semibold ${
+  !hasLiveReading(p.vitals) || Date.now() - (p.vitals.updatedAt || 0) > 10000
+    ? "text-gray-400"
+    : level >= 3
+    ? "text-rose-600"
+    : level === 2
+    ? "text-amber-600"
+    : "text-emerald-600"
+}`}>
+                              {(() => {
+  const isStale = !hasLiveReading(p.vitals) || Date.now() - (p.vitals.updatedAt || 0) > 10000;
+  return isStale ? "---" : `${Math.round(p.vitals.spo2)}%`;
+})()}
                             </div>
                             <div className="text-xs text-slate-400 dark:text-slate-300">{p.vitals.time || new Date().toLocaleTimeString()}</div>
+                          </div>
+
+                          <div className="text-right min-w-[56px]">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-300">HR</div>
+                            <div className={`text-xl font-semibold ${
+  !hasLiveReading(p.vitals) || p.vitals.hr === null || p.vitals.hr === undefined
+    ? "text-gray-400"
+    : "text-sky-600"
+}`}>
+                              {(() => {
+  const isUnavailable = !hasLiveReading(p.vitals) || p.vitals.hr === null || p.vitals.hr === undefined;
+  return isUnavailable ? "---" : Math.round(p.vitals.hr);
+})()}
+                            </div>
+                            <div className="text-xs text-slate-400 dark:text-slate-300">bpm</div>
                           </div>
 
                           <div className="flex items-center gap-2">
@@ -585,16 +583,36 @@ export default function DoctorPortalV2() {
                         <div className="text-sm text-slate-500 dark:text-slate-400">Updated: {new Date(selected.vitals.time ? selected.vitals.time : selected.vitals.updatedAt || Date.now()).toLocaleTimeString()}</div>
                       </div>
 
-                      <div style={{ height: 260 }} className="rounded-md overflow-hidden">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={selected.history}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="time" />
-                            <YAxis yAxisId="left" domain={[60, 100]} />
-                            <Tooltip />
-                            <Line yAxisId="left" type="monotone" dataKey="spo2" stroke="#2563eb" strokeWidth={2} dot={false} />
-                          </LineChart>
-                        </ResponsiveContainer>
+                      <div className="space-y-4">
+                        <div>
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">SpO2</div>
+                          <div style={{ height: 220 }} className="rounded-md overflow-hidden">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={selected.history}>
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis dataKey="time" />
+                                <YAxis yAxisId="left" domain={[60, 100]} />
+                                <Tooltip />
+                                <Line yAxisId="left" type="monotone" dataKey="spo2" stroke="#2563eb" strokeWidth={2} dot={false} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Heart Rate</div>
+                          <div style={{ height: 220 }} className="rounded-md overflow-hidden">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={selected.history}>
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis dataKey="time" />
+                                <YAxis yAxisId="left" domain={[40, 160]} />
+                                <Tooltip />
+                                <Line yAxisId="left" type="monotone" dataKey="hr" stroke="#0284c7" strokeWidth={2} dot={false} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -639,3 +657,4 @@ export default function DoctorPortalV2() {
     </div>
   );
 }
+   
