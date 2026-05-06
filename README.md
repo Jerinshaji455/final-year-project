@@ -166,7 +166,9 @@ npm issues:
 ## 👨‍💻 Contributors
 
 - Jerin Shaji
-- Team Members
+- Jomal Joy
+- Subin Saju
+- Lenoy John
 
 ---
 
